@@ -1,0 +1,199 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://wiki.ros.org/xacro" name="ur">
+  <xacro:arg name="name" default="ur"/>
+  <xacro:arg name="ur_type" default="ur10e"/>
+  <xacro:arg name="tf_prefix" default=""/>
+  <xacro:arg name="joint_limit_params" default="$(find ur_description)/config/$(arg ur_type)/joint_limits.yaml"/>
+  <xacro:arg name="kinematics_params" default="$(find ur_description)/config/$(arg ur_type)/default_kinematics.yaml"/>
+  <xacro:arg name="physical_params" default="$(find ur_description)/config/$(arg ur_type)/physical_parameters.yaml"/>
+  <xacro:arg name="visual_params" default="$(find ur_description)/config/$(arg ur_type)/visual_parameters.yaml"/>
+  <xacro:arg name="safety_limits" default="false"/>
+  <xacro:arg name="safety_pos_margin" default="0.15"/>
+  <xacro:arg name="safety_k_position" default="20"/>
+  <xacro:arg name="simulation_controllers" default=""/>
+  <xacro:arg name="ros_namespace" default=""/>
+
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+  <xacro:include filename="$(find ur_description)/urdf/inc/ur_joint_control.xacro"/>
+  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_85_gripper.urdf.xacro"/>
+
+  <xacro:macro name="ur_with_gripper_ros2_control" params="
+    name
+    tf_prefix
+    initial_positions:=${dict(
+      shoulder_pan_joint=0.0,
+      shoulder_lift_joint=-1.57,
+      elbow_joint=0.0,
+      wrist_1_joint=-1.57,
+      wrist_2_joint=0.0,
+      wrist_3_joint=0.0,
+      robotiq_85_left_knuckle_joint=0.0,
+      robotiq_85_right_knuckle_joint=0.0,
+      robotiq_85_left_inner_knuckle_joint=0.0,
+      robotiq_85_right_inner_knuckle_joint=0.0,
+      robotiq_85_left_finger_tip_joint=0.0,
+      robotiq_85_right_finger_tip_joint=0.0)}
+    ">
+    <ros2_control name="${name}" type="system">
+      <hardware>
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      </hardware>
+
+      <xacro:ur_joint_control_description
+        tf_prefix="${tf_prefix}"
+        initial_positions="${initial_positions}" />
+
+      <joint name="${tf_prefix}robotiq_85_left_knuckle_joint">
+        <command_interface name="position" />
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['robotiq_85_left_knuckle_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+      </joint>
+
+      <joint name="${tf_prefix}robotiq_85_right_knuckle_joint">
+        <command_interface name="position" />
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['robotiq_85_right_knuckle_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+      </joint>
+
+      <joint name="${tf_prefix}robotiq_85_left_inner_knuckle_joint">
+        <command_interface name="position" />
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['robotiq_85_left_inner_knuckle_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+      </joint>
+
+      <joint name="${tf_prefix}robotiq_85_right_inner_knuckle_joint">
+        <command_interface name="position" />
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['robotiq_85_right_inner_knuckle_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+      </joint>
+
+      <joint name="${tf_prefix}robotiq_85_left_finger_tip_joint">
+        <command_interface name="position" />
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['robotiq_85_left_finger_tip_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+      </joint>
+
+      <joint name="${tf_prefix}robotiq_85_right_finger_tip_joint">
+        <command_interface name="position" />
+        <state_interface name="position">
+          <param name="initial_value">${initial_positions['robotiq_85_right_finger_tip_joint']}</param>
+        </state_interface>
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
+      </joint>
+    </ros2_control>
+  </xacro:macro>
+
+  <link name="world" />
+
+  <link name="ground_plane">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="5 5 0"/>
+      </geometry>
+      <material name="ground_white">
+        <color rgba="1 1 1 0.5"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="5 5 0"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="ground_plane_joint" type="fixed">
+    <origin xyz="0 0 -0.01" rpy="0 0 0"/>
+    <parent link="world"/>
+    <child link="ground_plane"/>
+  </joint>
+
+  <xacro:ur_robot
+    name="$(arg name)"
+    tf_prefix="$(arg tf_prefix)"
+    parent="world"
+    joint_limits_parameters_file="$(arg joint_limit_params)"
+    kinematics_parameters_file="$(arg kinematics_params)"
+    physical_parameters_file="$(arg physical_params)"
+    visual_parameters_file="$(arg visual_params)"
+    safety_limits="$(arg safety_limits)"
+    safety_pos_margin="$(arg safety_pos_margin)"
+    safety_k_position="$(arg safety_k_position)"
+    force_abs_paths="true">
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </xacro:ur_robot>
+
+  <xacro:robotiq_85_gripper
+    prefix="$(arg tf_prefix)"
+    parent="$(arg tf_prefix)tool0"
+    use_mimic_joints="false">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:robotiq_85_gripper>
+
+  <link name="$(arg tf_prefix)gripper_tcp"/>
+  <joint name="$(arg tf_prefix)gripper_tcp_joint" type="fixed">
+    <parent link="$(arg tf_prefix)robotiq_85_base_link"/>
+    <child link="$(arg tf_prefix)gripper_tcp"/>
+    <origin xyz="0.16 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(arg simulation_controllers)</parameters>
+      <ros>
+        <namespace>$(arg ros_namespace)</namespace>
+      </ros>
+    </plugin>
+    <plugin filename="gz-sim-detachable-joint-system" name="cube_small_detachable_joint">
+      <parent_link>$(arg tf_prefix)robotiq_85_base_link</parent_link>
+      <child_model>cube_small</child_model>
+      <child_link>link</child_link>
+      <detach_topic>/cube_small/detach</detach_topic>
+      <attach_topic>/cube_small/attach</attach_topic>
+      <output_topic>/cube_small/state</output_topic>
+    </plugin>
+    <plugin filename="gz-sim-detachable-joint-system" name="cube_medium_detachable_joint">
+      <parent_link>$(arg tf_prefix)robotiq_85_base_link</parent_link>
+      <child_model>cube_medium</child_model>
+      <child_link>link</child_link>
+      <detach_topic>/cube_medium/detach</detach_topic>
+      <attach_topic>/cube_medium/attach</attach_topic>
+      <output_topic>/cube_medium/state</output_topic>
+    </plugin>
+    <plugin filename="gz-sim-detachable-joint-system" name="cube_large_detachable_joint">
+      <parent_link>$(arg tf_prefix)robotiq_85_base_link</parent_link>
+      <child_model>cube_large</child_model>
+      <child_link>link</child_link>
+      <detach_topic>/cube_large/detach</detach_topic>
+      <attach_topic>/cube_large/attach</attach_topic>
+      <output_topic>/cube_large/state</output_topic>
+    </plugin>
+  </gazebo>
+
+  <xacro:ur_with_gripper_ros2_control
+    name="$(arg name)"
+    tf_prefix="$(arg tf_prefix)" />
+</robot>
