@@ -1,0 +1,12 @@
+sort_manager:
+  ros__parameters:
+    bin_names: [bin_1, bin_2, bin_3, bin_4]
+    bins:
+      bin_1:
+        place_pose: [0.55, 0.27, 0.115, 0.0, 0.0, 0.0, 1.0]
+      bin_2:
+        place_pose: [0.69, 0.27, 0.115, 0.0, 0.0, 0.0, 1.0]
+      bin_3:
+        place_pose: [0.55, 0.45, 0.115, 0.0, 0.0, 0.0, 1.0]
+      bin_4:
+        place_pose: [0.69, 0.45, 0.115, 0.0, 0.0, 0.0, 1.0]

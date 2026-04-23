@@ -1,0 +1,44 @@
+perception_grasp_node:
+  ros__parameters:
+    camera:
+      color_topic: /camera/color/image_raw
+      depth_topic: /camera/depth/image_raw
+      info_topic: /camera/color/camera_info
+      frame: camera_optical_frame
+    world_frame: world
+    table_roi: [140, 80, 1140, 640]
+    table_z_world: 0.0
+    grasp_z_offset: -0.016
+    min_area: 1200
+    morph_open_kernel: 5
+    morph_close_kernel: 9
+    min_clearance_px: 10.0
+    grasp_width_min: 0.022
+    grasp_width_max: 0.040
+    support_length_min: 0.040
+    max_local_depth_std: 0.005
+    candidate_angle_delta_deg: 15.0
+    score_weights: [0.30, 0.20, 0.20, 0.10, 0.10, 0.10]
+    color_order: [red, green, blue, yellow]
+    color_to_class:
+      red: hammer
+      green: racket
+      blue: dumbbell
+      yellow: key
+    color_to_bin:
+      red: 1
+      green: 2
+      blue: 3
+      yellow: 4
+    hsv_thresholds:
+      red: ["0,120,70,10,255,255", "170,120,70,179,255,255"]
+      green: ["35,70,60,90,255,255"]
+      blue: ["95,90,60,130,255,255"]
+      yellow: ["18,100,100,35,255,255"]
+    debug:
+      publish_overlay: true
+      publish_component_overlay: true
+      log_rejections: true
+      log_frame_summary: true
+      log_candidates: true
+      log_candidate_limit: 3

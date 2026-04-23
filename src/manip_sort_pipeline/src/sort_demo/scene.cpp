@@ -216,6 +216,35 @@ bool wait_for_objects(
   return false;
 }
 
+bool remove_collision_object(
+  const rclcpp::Logger& logger,
+  moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,
+  const std::string& object_id)
+{
+  planning_scene_interface.removeCollisionObjects({object_id});
+
+  for (int attempt = 1; attempt <= 10; ++attempt)
+  {
+    const auto objects = planning_scene_interface.getObjects({object_id});
+    if (objects.empty())
+    {
+      RCLCPP_INFO(logger, "Removed collision object '%s' from the planning scene.", object_id.c_str());
+      return true;
+    }
+
+    RCLCPP_INFO(
+      logger, "Waiting for collision object '%s' to be removed... (%d/10)",
+      object_id.c_str(), attempt);
+    std::this_thread::sleep_for(200ms);
+  }
+
+  RCLCPP_WARN(
+    logger,
+    "Timed out waiting for collision object '%s' to be removed from the planning scene.",
+    object_id.c_str());
+  return false;
+}
+
 bool set_grasp_object_collisions(
   const rclcpp::Logger& logger,
   moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,

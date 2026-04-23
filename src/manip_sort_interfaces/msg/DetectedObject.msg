@@ -1,0 +1,8 @@
+string object_id
+string class_name
+string color_name
+int32 bin_id
+geometry_msgs/Point centroid_world
+manip_sort_interfaces/GraspCandidate[] candidates
+geometry_msgs/Pose best_grasp_pose
+float32 best_grasp_score

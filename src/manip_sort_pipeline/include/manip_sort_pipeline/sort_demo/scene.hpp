@@ -35,6 +35,11 @@ bool wait_for_objects(
   moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,
   const std::vector<std::string>& object_ids);
 
+bool remove_collision_object(
+  const rclcpp::Logger& logger,
+  moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,
+  const std::string& object_id);
+
 bool set_grasp_object_collisions(
   const rclcpp::Logger& logger,
   moveit::planning_interface::PlanningSceneInterface& planning_scene_interface,

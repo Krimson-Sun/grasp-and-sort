@@ -1,0 +1,49 @@
+sort_manager:
+  ros__parameters:
+    use_sim_time: true
+    end_effector_link: gripper_tcp
+    pose_reference_frame: base_link
+    gripper_action_name: /gripper_controller/follow_joint_trajectory
+    scan_named_target: up
+    perception_topic: /detected_objects
+    scan_timeout: 8.0
+    perception_stale_after: 1.5
+    pregrasp_z_offset: 0.14
+    lift_z_offset: 0.18
+    place_z_offset: 0.14
+    retreat_z_offset: 0.18
+    cartesian_avoid_collisions: true
+    pick_retry_step: 0.004
+    pick_retry_count: 0
+    dry_run: false
+    reset_objects_on_startup: true
+    object_ids: [hammer, racket, dumbbell, key]
+    objects:
+      hammer:
+        class_name: hammer
+        color_name: red
+        bin_id: 1
+        bin_name: bin_1
+        initial_pose: [0.51, -0.41, 0.02, 0.0, 0.0, 0.0, 1.0]
+        collision_dimensions: [0.13, 0.07, 0.04]
+      racket:
+        class_name: racket
+        color_name: green
+        bin_id: 2
+        bin_name: bin_2
+        initial_pose: [0.63, -0.29, 0.02, 0.0, 0.0, 0.0, 1.0]
+        collision_dimensions: [0.14, 0.07, 0.04]
+      dumbbell:
+        class_name: dumbbell
+        color_name: blue
+        bin_id: 3
+        bin_name: bin_3
+        initial_pose: [0.73, -0.20, 0.02, 0.0, 0.0, 0.0, 1.0]
+        collision_dimensions: [0.12, 0.06, 0.04]
+      key:
+        class_name: key
+        color_name: yellow
+        bin_id: 4
+        bin_name: bin_4
+        initial_pose: [0.57, -0.16, 0.02, 0.0, 0.0, 0.0, 1.0]
+        collision_dimensions: [0.145, 0.055, 0.04]

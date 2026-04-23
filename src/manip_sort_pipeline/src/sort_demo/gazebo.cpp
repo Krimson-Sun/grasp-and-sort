@@ -105,7 +105,7 @@ bool wait_for_cube_attach_state(
   GazeboDetachInterface& gazebo_detach_interface,
   const std::string& cube_id,
   bool expected_attached,
-  std::chrono::milliseconds timeout = 1500ms)
+  std::chrono::milliseconds timeout = 2500ms)
 {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (std::chrono::steady_clock::now() < deadline)

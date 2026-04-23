@@ -1,9 +1,11 @@
 #include "manip_sort_pipeline/sort_demo/motion.hpp"
 
+#include <cmath>
 #include <chrono>
 #include <map>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <builtin_interfaces/msg/duration.hpp>
 #include <moveit/utils/moveit_error_code.hpp>
@@ -52,6 +54,16 @@ std::vector<std::string> get_gripper_joint_names()
     "robotiq_85_left_finger_tip_joint",
     "robotiq_85_right_finger_tip_joint",
   };
+}
+
+double pose_position_error(
+  const geometry_msgs::msg::Pose& left,
+  const geometry_msgs::msg::Pose& right)
+{
+  const auto dx = left.position.x - right.position.x;
+  const auto dy = left.position.y - right.position.y;
+  const auto dz = left.position.z - right.position.z;
+  return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 }  // namespace
@@ -284,7 +296,7 @@ bool plan_and_execute_pose_target(
         target_pose, move_group.getEndEffectorLink());
     }
 
-    return move_group.setPoseTarget(target_pose);
+    return move_group.setPoseTarget(target_pose, move_group.getEndEffectorLink());
   };
 
   struct PlanningAttempt
@@ -306,8 +318,12 @@ bool plan_and_execute_pose_target(
   }
 
   RCLCPP_INFO(
-    logger, "Planning to '%s' using %s.", label.c_str(),
-    position_only ? "position target" : "pose target");
+    logger,
+    "Planning to '%s' using %s. target pos=(%.3f, %.3f, %.3f) target quat=(%.3f, %.3f, %.3f, %.3f)",
+    label.c_str(), position_only ? "position target" : "pose target",
+    target_pose.position.x, target_pose.position.y, target_pose.position.z,
+    target_pose.orientation.x, target_pose.orientation.y,
+    target_pose.orientation.z, target_pose.orientation.w);
 
   moveit::planning_interface::MoveGroupInterface::Plan plan;
   moveit::core::MoveItErrorCode plan_result =
@@ -332,6 +348,18 @@ bool plan_and_execute_pose_target(
     plan_result = move_group.plan(plan);
     if (plan_result)
     {
+      if (attempt.use_position_only)
+      {
+        RCLCPP_WARN(
+          logger,
+          "Planning to '%s' succeeded only with position-only fallback. Orientation was not enforced.",
+          label.c_str());
+      }
+      else
+      {
+        RCLCPP_INFO(
+          logger, "Planning to '%s' succeeded with %s.", label.c_str(), attempt.description);
+      }
       planned = true;
       break;
     }
@@ -360,9 +388,25 @@ bool plan_and_execute_pose_target(
     return false;
   }
 
+  move_group.getCurrentState(1.0);
+  const auto actual_pose = move_group.getCurrentPose(move_group.getEndEffectorLink()).pose;
+  const auto position_error = pose_position_error(actual_pose, target_pose);
+  constexpr double max_pose_target_position_error = 0.04;
+  if (position_error > max_pose_target_position_error)
+  {
+    RCLCPP_ERROR(
+      logger,
+      "Execution to '%s' reported success, but TCP '%s' is %.3f m from target. "
+      "actual=(%.3f, %.3f, %.3f), target=(%.3f, %.3f, %.3f).",
+      label.c_str(), move_group.getEndEffectorLink().c_str(), position_error,
+      actual_pose.position.x, actual_pose.position.y, actual_pose.position.z,
+      target_pose.position.x, target_pose.position.y, target_pose.position.z);
+    return false;
+  }
+
   RCLCPP_INFO(
-    logger, "Reached '%s' at x=%.3f y=%.3f z=%.3f.", label.c_str(), target_pose.position.x,
-    target_pose.position.y, target_pose.position.z);
+    logger, "Reached '%s' at x=%.3f y=%.3f z=%.3f.", label.c_str(), actual_pose.position.x,
+    actual_pose.position.y, actual_pose.position.z);
   return true;
 }
 

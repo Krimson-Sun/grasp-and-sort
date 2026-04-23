@@ -12,6 +12,7 @@
   <xacro:arg name="safety_k_position" default="20"/>
   <xacro:arg name="simulation_controllers" default=""/>
   <xacro:arg name="ros_namespace" default=""/>
+  <xacro:arg name="enable_vision_detachables" default="false"/>
 
   <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
   <xacro:include filename="$(find ur_description)/urdf/inc/ur_joint_control.xacro"/>
@@ -148,7 +149,7 @@
 
   <xacro:robotiq_85_gripper
     prefix="$(arg tf_prefix)"
-    parent="$(arg tf_prefix)tool0"
+    parent="$(arg tf_prefix)flange"
     use_mimic_joints="false">
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </xacro:robotiq_85_gripper>
@@ -167,7 +168,7 @@
         <namespace>$(arg ros_namespace)</namespace>
       </ros>
     </plugin>
-    <plugin filename="gz-sim-detachable-joint-system" name="cube_small_detachable_joint">
+    <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
       <parent_link>$(arg tf_prefix)robotiq_85_base_link</parent_link>
       <child_model>cube_small</child_model>
       <child_link>link</child_link>
@@ -175,7 +176,7 @@
       <attach_topic>/cube_small/attach</attach_topic>
       <output_topic>/cube_small/state</output_topic>
     </plugin>
-    <plugin filename="gz-sim-detachable-joint-system" name="cube_medium_detachable_joint">
+    <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
       <parent_link>$(arg tf_prefix)robotiq_85_base_link</parent_link>
       <child_model>cube_medium</child_model>
       <child_link>link</child_link>
@@ -183,7 +184,7 @@
       <attach_topic>/cube_medium/attach</attach_topic>
       <output_topic>/cube_medium/state</output_topic>
     </plugin>
-    <plugin filename="gz-sim-detachable-joint-system" name="cube_large_detachable_joint">
+    <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
       <parent_link>$(arg tf_prefix)robotiq_85_base_link</parent_link>
       <child_model>cube_large</child_model>
       <child_link>link</child_link>
@@ -191,6 +192,40 @@
       <attach_topic>/cube_large/attach</attach_topic>
       <output_topic>/cube_large/state</output_topic>
     </plugin>
+    <xacro:if value="$(arg enable_vision_detachables)">
+      <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+        <parent_link>$(arg tf_prefix)robotiq_85_left_finger_tip_link</parent_link>
+        <child_model>hammer</child_model>
+        <child_link>link</child_link>
+        <detach_topic>/hammer/detach</detach_topic>
+        <attach_topic>/hammer/attach</attach_topic>
+        <output_topic>/hammer/state</output_topic>
+      </plugin>
+      <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+        <parent_link>$(arg tf_prefix)robotiq_85_left_finger_tip_link</parent_link>
+        <child_model>racket</child_model>
+        <child_link>link</child_link>
+        <detach_topic>/racket/detach</detach_topic>
+        <attach_topic>/racket/attach</attach_topic>
+        <output_topic>/racket/state</output_topic>
+      </plugin>
+      <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+        <parent_link>$(arg tf_prefix)robotiq_85_left_finger_tip_link</parent_link>
+        <child_model>dumbbell</child_model>
+        <child_link>link</child_link>
+        <detach_topic>/dumbbell/detach</detach_topic>
+        <attach_topic>/dumbbell/attach</attach_topic>
+        <output_topic>/dumbbell/state</output_topic>
+      </plugin>
+      <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+        <parent_link>$(arg tf_prefix)robotiq_85_left_finger_tip_link</parent_link>
+        <child_model>key</child_model>
+        <child_link>link</child_link>
+        <detach_topic>/key/detach</detach_topic>
+        <attach_topic>/key/attach</attach_topic>
+        <output_topic>/key/state</output_topic>
+      </plugin>
+    </xacro:if>
   </gazebo>
 
   <xacro:ur_with_gripper_ros2_control
