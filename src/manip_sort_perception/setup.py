@@ -25,6 +25,8 @@ setup(
         "console_scripts": [
             "perception_grasp_node = manip_sort_perception.perception_grasp_node:main",
             "perception_smoke_check = manip_sort_perception.smoke_checks:main",
+            "perception_offline_overlay = manip_sort_perception.offline_overlay:main",
+            "perception_report_frames = manip_sort_perception.report_visualization:main",
         ],
     },
 )

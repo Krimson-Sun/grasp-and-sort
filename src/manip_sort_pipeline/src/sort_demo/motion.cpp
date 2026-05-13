@@ -1,13 +1,17 @@
 #include "manip_sort_pipeline/sort_demo/motion.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <builtin_interfaces/msg/duration.hpp>
+#include <moveit/robot_state/robot_state.hpp>
 #include <moveit/utils/moveit_error_code.hpp>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <moveit_msgs/msg/robot_trajectory.hpp>
@@ -64,6 +68,183 @@ double pose_position_error(
   const auto dy = left.position.y - right.position.y;
   const auto dz = left.position.z - right.position.z;
   return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+double duration_to_seconds(const builtin_interfaces::msg::Duration& duration)
+{
+  return static_cast<double>(duration.sec) + static_cast<double>(duration.nanosec) * 1e-9;
+}
+
+struct TransferPlanScore
+{
+  double total = std::numeric_limits<double>::infinity();
+  double tcp_path_length = 0.0;
+  double straight_distance = 0.0;
+  double detour_ratio = std::numeric_limits<double>::infinity();
+  double joint_path_length = 0.0;
+  double duration = 0.0;
+  double z_overshoot = 0.0;
+};
+
+struct ScoredPlan
+{
+  moveit::planning_interface::MoveGroupInterface::Plan plan;
+  PlannerCandidate planner;
+  int attempt = 1;
+  TransferPlanScore score;
+};
+
+std::string planner_label(const PlannerCandidate& planner)
+{
+  return planner.pipeline_id + "/" + (planner.planner_id.empty() ? "default" : planner.planner_id);
+}
+
+std::optional<geometry_msgs::msg::Point> tcp_point_for_trajectory_point(
+  const moveit::core::RobotState& reference_state,
+  const trajectory_msgs::msg::JointTrajectory& trajectory,
+  const trajectory_msgs::msg::JointTrajectoryPoint& point,
+  const std::string& tip_link)
+{
+  if (point.positions.size() < trajectory.joint_names.size())
+  {
+    return std::nullopt;
+  }
+
+  moveit::core::RobotState state(reference_state);
+  try
+  {
+    state.setVariablePositions(trajectory.joint_names, point.positions);
+  }
+  catch (const std::exception&)
+  {
+    return std::nullopt;
+  }
+  state.update();
+
+  if (!state.getRobotModel()->hasLinkModel(tip_link))
+  {
+    return std::nullopt;
+  }
+
+  const auto& transform = state.getGlobalLinkTransform(tip_link);
+  geometry_msgs::msg::Point result;
+  result.x = transform.translation().x();
+  result.y = transform.translation().y();
+  result.z = transform.translation().z();
+  return result;
+}
+
+std::optional<TransferPlanScore> score_transfer_plan(
+  const moveit::planning_interface::MoveGroupInterface::Plan& plan,
+  const moveit::core::RobotState& start_state,
+  const geometry_msgs::msg::Pose& target_pose,
+  const std::string& tip_link,
+  const TransferScoreWeights& weights)
+{
+  const auto& trajectory = plan.trajectory.joint_trajectory;
+  if (trajectory.points.empty() || trajectory.joint_names.empty())
+  {
+    return std::nullopt;
+  }
+
+  TransferPlanScore score;
+  if (!start_state.getRobotModel()->hasLinkModel(tip_link))
+  {
+    return std::nullopt;
+  }
+
+  const auto& start_transform = start_state.getGlobalLinkTransform(tip_link);
+  geometry_msgs::msg::Point start_tcp;
+  start_tcp.x = start_transform.translation().x();
+  start_tcp.y = start_transform.translation().y();
+  start_tcp.z = start_transform.translation().z();
+
+  std::optional<geometry_msgs::msg::Point> previous_tcp = start_tcp;
+  double max_z = start_tcp.z;
+
+  for (const auto& point : trajectory.points)
+  {
+    const auto current_tcp =
+      tcp_point_for_trajectory_point(start_state, trajectory, point, tip_link);
+    if (!current_tcp)
+    {
+      return std::nullopt;
+    }
+
+    if (previous_tcp)
+    {
+      const auto dx = current_tcp->x - previous_tcp->x;
+      const auto dy = current_tcp->y - previous_tcp->y;
+      const auto dz = current_tcp->z - previous_tcp->z;
+      score.tcp_path_length += std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    max_z = std::max(max_z, current_tcp->z);
+    previous_tcp = current_tcp;
+  }
+
+  std::vector<double> previous_joint_positions;
+  previous_joint_positions.reserve(trajectory.joint_names.size());
+  try
+  {
+    for (const auto& joint_name : trajectory.joint_names)
+    {
+      previous_joint_positions.push_back(start_state.getVariablePosition(joint_name));
+    }
+  }
+  catch (const std::exception&)
+  {
+    return std::nullopt;
+  }
+
+  for (const auto& current : trajectory.points)
+  {
+    const auto joint_count = std::min(previous_joint_positions.size(), current.positions.size());
+    for (std::size_t joint_index = 0; joint_index < joint_count; ++joint_index)
+    {
+      score.joint_path_length +=
+        std::abs(current.positions[joint_index] - previous_joint_positions[joint_index]);
+      previous_joint_positions[joint_index] = current.positions[joint_index];
+    }
+  }
+
+  if (!trajectory.points.empty())
+  {
+    score.duration = duration_to_seconds(trajectory.points.back().time_from_start);
+  }
+
+  const auto straight_dx = target_pose.position.x - start_tcp.x;
+  const auto straight_dy = target_pose.position.y - start_tcp.y;
+  const auto straight_dz = target_pose.position.z - start_tcp.z;
+  score.straight_distance =
+    std::sqrt(straight_dx * straight_dx + straight_dy * straight_dy + straight_dz * straight_dz);
+  score.detour_ratio =
+    score.straight_distance > 1e-6 ? score.tcp_path_length / score.straight_distance : 1.0;
+  score.z_overshoot = std::max(0.0, max_z - std::max(start_tcp.z, target_pose.position.z));
+  score.total = weights.detour_ratio * score.detour_ratio +
+                weights.joint_path_length * score.joint_path_length +
+                weights.duration * score.duration +
+                weights.z_overshoot * score.z_overshoot;
+  return score;
+}
+
+std::string transfer_plan_rejection_reason(
+  const TransferPlanScore& score,
+  const TransferScoreWeights& weights)
+{
+  if (weights.max_detour_ratio > 0.0 && score.detour_ratio > weights.max_detour_ratio)
+  {
+    return "detour_ratio";
+  }
+  if (weights.max_z_overshoot > 0.0 && score.z_overshoot > weights.max_z_overshoot)
+  {
+    return "z_overshoot";
+  }
+  if (weights.max_duration > 0.0 && score.duration > weights.max_duration)
+  {
+    return "duration";
+  }
+  return "";
 }
 
 }  // namespace
@@ -226,10 +407,12 @@ bool execute_gripper_action_target(
     const auto error_string =
       wrapped_result.result ? wrapped_result.result->error_string : std::string("unknown");
 
-    const bool is_grasp_contact_abort =
-      !open && wrapped_result.code == rclcpp_action::ResultCode::ABORTED &&
+    const bool is_tolerance_abort =
+      wrapped_result.code == rclcpp_action::ResultCode::ABORTED &&
       (error_string.find("tolerance violation") != std::string::npos ||
        error_string.find("Tolerance violation") != std::string::npos);
+    const bool is_grasp_contact_abort = !open && is_tolerance_abort;
+    const bool is_open_tolerance_abort = open && is_tolerance_abort;
 
     if (is_grasp_contact_abort)
     {
@@ -237,6 +420,14 @@ bool execute_gripper_action_target(
         logger,
         "Explicit gripper target '%s' stopped on contact before full closure: %s. "
         "Treating this as a successful grasp.",
+        label, error_string.c_str());
+    }
+    else if (is_open_tolerance_abort)
+    {
+      RCLCPP_WARN(
+        logger,
+        "Explicit gripper target '%s' stopped near the open target: %s. "
+        "Treating this as successful enough to continue after release.",
         label, error_string.c_str());
     }
     else
@@ -407,6 +598,154 @@ bool plan_and_execute_pose_target(
   RCLCPP_INFO(
     logger, "Reached '%s' at x=%.3f y=%.3f z=%.3f.", label.c_str(), actual_pose.position.x,
     actual_pose.position.y, actual_pose.position.z);
+  return true;
+}
+
+bool plan_and_execute_best_pose_target(
+  const rclcpp::Logger& logger,
+  moveit::planning_interface::MoveGroupInterface& move_group,
+  const geometry_msgs::msg::Pose& target_pose,
+  const std::string& label,
+  const std::vector<PlannerCandidate>& planner_candidates,
+  const TransferScoreWeights& score_weights)
+{
+  if (planner_candidates.empty())
+  {
+    RCLCPP_ERROR(logger, "No planner candidates configured for best-plan target '%s'.", label.c_str());
+    return false;
+  }
+
+  move_group.clearPoseTargets();
+  const auto fixed_start_state = move_group.getCurrentState(1.0);
+  if (!fixed_start_state)
+  {
+    RCLCPP_ERROR(logger, "Unable to read current state before planning '%s'.", label.c_str());
+    return false;
+  }
+
+  RCLCPP_INFO(
+    logger,
+    "Planning best pose target '%s' with %zu planner candidates. target pos=(%.3f, %.3f, %.3f) "
+    "target quat=(%.3f, %.3f, %.3f, %.3f)",
+    label.c_str(), planner_candidates.size(), target_pose.position.x, target_pose.position.y,
+    target_pose.position.z, target_pose.orientation.x, target_pose.orientation.y,
+    target_pose.orientation.z, target_pose.orientation.w);
+
+  std::optional<ScoredPlan> best_plan;
+  std::size_t successful_candidates = 0;
+  std::size_t rejected_candidates = 0;
+
+  for (const auto& planner : planner_candidates)
+  {
+    const int attempts = std::max(1, planner.attempts);
+    for (int attempt = 1; attempt <= attempts; ++attempt)
+    {
+      move_group.setStartState(*fixed_start_state);
+      move_group.clearPoseTargets();
+      move_group.setPlanningPipelineId(planner.pipeline_id);
+      move_group.setPlannerId(planner.planner_id);
+
+      if (!move_group.setPoseTarget(target_pose, move_group.getEndEffectorLink()))
+      {
+        RCLCPP_WARN(
+          logger, "Unable to set pose target for transfer candidate '%s' attempt %d/%d.",
+          planner_label(planner).c_str(), attempt, attempts);
+        continue;
+      }
+
+      moveit::planning_interface::MoveGroupInterface::Plan plan;
+      const auto plan_result = move_group.plan(plan);
+      if (!plan_result)
+      {
+        RCLCPP_WARN(
+          logger, "Plan candidate '%s' attempt %d/%d failed to plan: %s",
+          planner_label(planner).c_str(), attempt, attempts,
+          moveit::core::errorCodeToString(plan_result).c_str());
+        continue;
+      }
+
+      const auto score = score_transfer_plan(
+        plan, *fixed_start_state, target_pose, move_group.getEndEffectorLink(), score_weights);
+      if (!score)
+      {
+        RCLCPP_WARN(
+          logger,
+          "Plan candidate '%s' attempt %d/%d planned, but its trajectory could not be scored.",
+          planner_label(planner).c_str(), attempt, attempts);
+        continue;
+      }
+
+      const auto rejection_reason = transfer_plan_rejection_reason(*score, score_weights);
+      RCLCPP_INFO(
+        logger,
+        "Plan candidate '%s' attempt %d/%d: score=%.3f detour=%.3f tcp_len=%.3f "
+        "straight=%.3f joint_len=%.3f duration=%.3f z_over=%.3f%s%s",
+        planner_label(planner).c_str(), attempt, attempts, score->total, score->detour_ratio,
+        score->tcp_path_length, score->straight_distance, score->joint_path_length,
+        score->duration, score->z_overshoot, rejection_reason.empty() ? "" : " rejected=",
+        rejection_reason.c_str());
+
+      if (!rejection_reason.empty())
+      {
+        ++rejected_candidates;
+        continue;
+      }
+
+      ++successful_candidates;
+      if (!best_plan || score->total < best_plan->score.total)
+      {
+        best_plan = ScoredPlan{plan, planner, attempt, *score};
+      }
+    }
+  }
+
+  move_group.clearPoseTargets();
+
+  if (!best_plan)
+  {
+    RCLCPP_ERROR(
+      logger,
+      "No acceptable transfer plan found for '%s'. successful=%zu rejected=%zu",
+      label.c_str(), successful_candidates, rejected_candidates);
+    return false;
+  }
+
+  RCLCPP_INFO(
+    logger,
+    "Selected plan candidate '%s' attempt %d for '%s': score=%.3f detour=%.3f "
+    "tcp_len=%.3f joint_len=%.3f duration=%.3f z_over=%.3f",
+    planner_label(best_plan->planner).c_str(), best_plan->attempt, label.c_str(),
+    best_plan->score.total, best_plan->score.detour_ratio, best_plan->score.tcp_path_length,
+    best_plan->score.joint_path_length, best_plan->score.duration, best_plan->score.z_overshoot);
+
+  const auto exec_result = move_group.execute(best_plan->plan);
+  if (!exec_result)
+  {
+    RCLCPP_ERROR(
+      logger, "Execution of selected plan '%s' failed: %s", label.c_str(),
+      moveit::core::errorCodeToString(exec_result).c_str());
+    return false;
+  }
+
+  move_group.getCurrentState(1.0);
+  const auto actual_pose = move_group.getCurrentPose(move_group.getEndEffectorLink()).pose;
+  const auto position_error = pose_position_error(actual_pose, target_pose);
+  constexpr double max_pose_target_position_error = 0.04;
+  if (position_error > max_pose_target_position_error)
+  {
+    RCLCPP_ERROR(
+      logger,
+      "Selected plan '%s' executed, but TCP '%s' is %.3f m from target. "
+      "actual=(%.3f, %.3f, %.3f), target=(%.3f, %.3f, %.3f).",
+      label.c_str(), move_group.getEndEffectorLink().c_str(), position_error,
+      actual_pose.position.x, actual_pose.position.y, actual_pose.position.z,
+      target_pose.position.x, target_pose.position.y, target_pose.position.z);
+    return false;
+  }
+
+  RCLCPP_INFO(
+    logger, "Reached best-plan target '%s' at x=%.3f y=%.3f z=%.3f.",
+    label.c_str(), actual_pose.position.x, actual_pose.position.y, actual_pose.position.z);
   return true;
 }
 

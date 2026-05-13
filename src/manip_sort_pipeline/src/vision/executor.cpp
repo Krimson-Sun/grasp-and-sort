@@ -125,6 +125,43 @@ std::vector<geometry_msgs::msg::Quaternion> build_preplace_orientation_options(
   return options;
 }
 
+bool plan_and_execute_transfer_to_preplace(
+  const rclcpp::Logger& logger,
+  moveit::planning_interface::MoveGroupInterface& arm_group,
+  const geometry_msgs::msg::Pose& preplace,
+  const std::string& label,
+  const VisionManagerConfig& config)
+{
+  if (sort_demo::plan_and_execute_best_pose_target(
+        logger, arm_group, preplace, label, config.transfer_planners,
+        config.transfer_score_weights))
+  {
+    return true;
+  }
+
+  RCLCPP_WARN(
+    logger,
+    "Best-plan transfer failed for '%s'. Trying the configured planner portfolio again with "
+    "approximate IK and position-only fallback before giving up with the object attached.",
+    label.c_str());
+
+  for (const auto& planner : config.transfer_planners)
+  {
+    const int attempts = std::max(1, planner.attempts);
+    for (int attempt = 1; attempt <= attempts; ++attempt)
+    {
+      if (sort_demo::plan_and_execute_pose_target(
+            logger, arm_group, preplace, label + "_robust_fallback",
+            planner.pipeline_id, planner.planner_id, false, true, true))
+      {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 }  // namespace
 
 bool execute_vision_sort_task(
@@ -178,12 +215,21 @@ bool execute_vision_sort_task(
     return false;
   }
 
-  if (!sort_demo::plan_and_execute_pose_target(
-        logger, arm_group, pregrasp, task.object_id + "_pregrasp", "ompl", "",
-        false, true, false))
+  if (!sort_demo::plan_and_execute_best_pose_target(
+        logger, arm_group, pregrasp, task.object_id + "_pregrasp_approach",
+        config.pregrasp_planners, config.pregrasp_score_weights))
   {
-    failure_reason = "plan_failed";
-    return false;
+    RCLCPP_WARN(
+      logger,
+      "Best-plan pregrasp approach for '%s' failed. Falling back to the legacy OMPL pregrasp planner.",
+      task.object_id.c_str());
+    if (!sort_demo::plan_and_execute_pose_target(
+          logger, arm_group, pregrasp, task.object_id + "_pregrasp", "ompl", "",
+          false, true, false))
+    {
+      failure_reason = "plan_failed";
+      return false;
+    }
   }
 
   if (!sort_demo::set_grasp_object_collisions(
@@ -308,9 +354,8 @@ bool execute_vision_sort_task(
         task.object_id.c_str(), preplace_orientation_index, preplace_orientation_options.size());
     }
 
-    if (sort_demo::plan_and_execute_pose_target(
-          logger, arm_group, preplace, task.object_id + "_preplace", "ompl", "",
-          false, false, false))
+    if (plan_and_execute_transfer_to_preplace(
+          logger, arm_group, preplace, task.object_id + "_preplace_transfer", config))
     {
       reached_preplace = true;
       break;

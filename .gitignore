@@ -4,5 +4,6 @@ log/
 .colcon/
 .idea/
 .vscode/
+report_assets/
 **/__pycache__/
 **/*.pyc

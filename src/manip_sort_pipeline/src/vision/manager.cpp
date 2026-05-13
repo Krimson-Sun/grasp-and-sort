@@ -17,6 +17,7 @@
 #include <moveit/move_group_interface/move_group_interface.hpp>
 #include <moveit/planning_scene_interface/planning_scene_interface.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include "manip_sort_pipeline/sort_demo/gazebo.hpp"
 #include "manip_sort_pipeline/sort_demo/motion.hpp"
@@ -278,6 +279,8 @@ bool run_vision_sort_manager(const std::shared_ptr<rclcpp::Node>& node)
       cache.update(message);
     });
   (void)subscription;
+  auto decision_capture_publisher = node->create_publisher<std_msgs::msg::String>(
+    config.decision_capture_topic, 10);
 
   moveit::planning_interface::MoveGroupInterface arm_group(node, config.sort_demo_config.arm_group_name);
   moveit::planning_interface::MoveGroupInterface gripper_group(node, config.sort_demo_config.gripper_group_name);
@@ -303,11 +306,65 @@ bool run_vision_sort_manager(const std::shared_ptr<rclcpp::Node>& node)
   RCLCPP_INFO(
     logger,
     "Vision sort manager configured with %zu objects, perception topic '%s', end_effector_link='%s', "
-    "pose_reference_frame='%s', dry_run=%s.",
+    "pose_reference_frame='%s', dry_run=%s, capture_decision_frames=%s, "
+    "return_to_scan_after_success=%s, return_to_scan_after_candidate_failure=%s, "
+    "recover_to_scan_after_skipped_success_timeout=%s.",
     object_ids.size(), config.perception_topic.c_str(),
     config.sort_demo_config.end_effector_link.c_str(),
     config.sort_demo_config.pose_reference_frame.c_str(),
-    config.dry_run ? "true" : "false");
+    config.dry_run ? "true" : "false",
+    config.capture_decision_frames ? "true" : "false",
+    config.return_to_scan_after_success ? "true" : "false",
+    config.return_to_scan_after_candidate_failure ? "true" : "false",
+    config.recover_to_scan_after_skipped_success_timeout ? "true" : "false");
+  {
+    std::ostringstream stream;
+    for (const auto& planner : config.pregrasp_planners)
+    {
+      if (stream.tellp() > 0)
+      {
+        stream << ", ";
+      }
+      stream << planner.pipeline_id << "/"
+             << (planner.planner_id.empty() ? "default" : planner.planner_id)
+             << "x" << planner.attempts;
+    }
+    RCLCPP_INFO(
+      logger,
+      "Pregrasp best-plan scoring enabled with planners [%s]. weights: detour=%.2f, "
+      "joint=%.2f, duration=%.2f, z_over=%.2f; reject: max_detour=%.2f, "
+      "max_z_over=%.2f, max_duration=%.2f.",
+      stream.str().c_str(), config.pregrasp_score_weights.detour_ratio,
+      config.pregrasp_score_weights.joint_path_length,
+      config.pregrasp_score_weights.duration, config.pregrasp_score_weights.z_overshoot,
+      config.pregrasp_score_weights.max_detour_ratio,
+      config.pregrasp_score_weights.max_z_overshoot,
+      config.pregrasp_score_weights.max_duration);
+  }
+  {
+    std::ostringstream stream;
+    for (const auto& planner : config.transfer_planners)
+    {
+      if (stream.tellp() > 0)
+      {
+        stream << ", ";
+      }
+      stream << planner.pipeline_id << "/"
+             << (planner.planner_id.empty() ? "default" : planner.planner_id)
+             << "x" << planner.attempts;
+    }
+    RCLCPP_INFO(
+      logger,
+      "Transfer best-plan scoring enabled with planners [%s]. weights: detour=%.2f, "
+      "joint=%.2f, duration=%.2f, z_over=%.2f; reject: max_detour=%.2f, "
+      "max_z_over=%.2f, max_duration=%.2f.",
+      stream.str().c_str(), config.transfer_score_weights.detour_ratio,
+      config.transfer_score_weights.joint_path_length,
+      config.transfer_score_weights.duration, config.transfer_score_weights.z_overshoot,
+      config.transfer_score_weights.max_detour_ratio,
+      config.transfer_score_weights.max_z_overshoot,
+      config.transfer_score_weights.max_duration);
+  }
 
   bool success = false;
   do
@@ -358,6 +415,7 @@ bool run_vision_sort_manager(const std::shared_ptr<rclcpp::Node>& node)
     std::unordered_set<std::string> completed_object_ids;
     std::unordered_set<std::string> deferred_object_ids;
     std::size_t consecutive_perception_timeouts = 0;
+    bool skipped_scan_after_success = false;
     const auto touch_links = sort_demo::get_touch_links();
     while (rclcpp::ok())
     {
@@ -370,6 +428,21 @@ bool run_vision_sort_manager(const std::shared_ptr<rclcpp::Node>& node)
           logger,
           "Perception timeout #%zu. Waiting for the next frame instead of shutting down.",
           consecutive_perception_timeouts);
+        if (skipped_scan_after_success && config.recover_to_scan_after_skipped_success_timeout)
+        {
+          RCLCPP_WARN(
+            logger,
+            "Perception timed out after skipping the post-sort scan pose. Returning to '%s' to recover camera visibility.",
+            config.scan_named_target.c_str());
+          sort_demo::plan_and_execute_named_target(logger, arm_group, config.scan_named_target);
+          skipped_scan_after_success = false;
+        }
+        else if (skipped_scan_after_success)
+        {
+          RCLCPP_WARN(
+            logger,
+            "Perception timed out after skipping the post-sort scan pose. Staying at the current pose because scan recovery is disabled.");
+        }
         continue;
       }
       consecutive_perception_timeouts = 0;
@@ -467,6 +540,16 @@ bool run_vision_sort_manager(const std::shared_ptr<rclcpp::Node>& node)
           active_object.object_id.c_str(), object_config.bin_name.c_str(),
           format_xyz(active_object.centroid_world).c_str(), active_object.best_grasp_score,
           active_object.candidates.size());
+        if (config.capture_decision_frames)
+        {
+          std_msgs::msg::String capture_request;
+          capture_request.data = active_object.object_id;
+          decision_capture_publisher->publish(capture_request);
+          RCLCPP_INFO(
+            logger,
+            "Requested automatic capture of the decision frame for '%s' on topic '%s'.",
+            active_object.object_id.c_str(), config.decision_capture_topic.c_str());
+        }
         std::size_t candidate_index = 0;
         for (const auto& candidate : active_object.candidates)
         {
@@ -498,7 +581,8 @@ bool run_vision_sort_manager(const std::shared_ptr<rclcpp::Node>& node)
           }
 
           RCLCPP_WARN(
-            logger, "Candidate %zu for '%s' failed with reason '%s'. Returning to scan pose and waiting for a fresh frame.",
+            logger,
+            "Candidate %zu for '%s' failed with reason '%s'. Waiting for a fresh frame from the current pose.",
             candidate_index, active_object.object_id.c_str(), failure_reason.c_str());
           if (failure_reason == "attached_recovery_failed")
           {
@@ -510,7 +594,13 @@ bool run_vision_sort_manager(const std::shared_ptr<rclcpp::Node>& node)
             cycle_abort = true;
             break;
           }
-          sort_demo::plan_and_execute_named_target(logger, arm_group, config.scan_named_target);
+          if (config.return_to_scan_after_candidate_failure)
+          {
+            RCLCPP_WARN(
+              logger, "Returning to scan pose after candidate failure because it is enabled.");
+            sort_demo::plan_and_execute_named_target(logger, arm_group, config.scan_named_target);
+            skipped_scan_after_success = false;
+          }
 
           bool object_still_visible = true;
           if (object_present_in_new_frame(
@@ -549,7 +639,18 @@ bool run_vision_sort_manager(const std::shared_ptr<rclcpp::Node>& node)
 
         if (cycle_success)
         {
-          sort_demo::plan_and_execute_named_target(logger, arm_group, config.scan_named_target);
+          if (config.return_to_scan_after_success)
+          {
+            sort_demo::plan_and_execute_named_target(logger, arm_group, config.scan_named_target);
+            skipped_scan_after_success = false;
+          }
+          else
+          {
+            skipped_scan_after_success = true;
+            RCLCPP_INFO(
+              logger,
+              "Skipping post-sort return to scan pose. The next object will be attempted from the current retreat pose.");
+          }
           break;
         }
       }

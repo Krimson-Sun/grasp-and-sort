@@ -59,6 +59,24 @@ struct SortExecutionOptions
   int pick_retry_count = 4;
 };
 
+struct PlannerCandidate
+{
+  std::string pipeline_id;
+  std::string planner_id;
+  int attempts = 1;
+};
+
+struct TransferScoreWeights
+{
+  double detour_ratio = 3.0;
+  double joint_path_length = 0.4;
+  double duration = 0.2;
+  double z_overshoot = 2.0;
+  double max_detour_ratio = 3.0;
+  double max_z_overshoot = 0.35;
+  double max_duration = 0.0;
+};
+
 struct SortDemoConfig
 {
   std::string arm_group_name = "ur_manipulator";

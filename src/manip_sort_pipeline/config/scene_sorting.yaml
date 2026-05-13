@@ -12,11 +12,37 @@ sort_manager:
     lift_z_offset: 0.18
     place_z_offset: 0.14
     retreat_z_offset: 0.18
+    pregrasp_planners:
+      - "pilz_industrial_motion_planner:PTP:1"
+      - "ompl::4"
+    pregrasp_score_detour_ratio_weight: 1.0
+    pregrasp_score_joint_path_length_weight: 0.8
+    pregrasp_score_duration_weight: 0.2
+    pregrasp_score_z_overshoot_weight: 0.2
+    pregrasp_score_max_detour_ratio: 4.0
+    pregrasp_score_max_z_overshoot: 0.60
+    pregrasp_score_max_duration: 0.0
+    transfer_planners:
+      - "pilz_industrial_motion_planner:LIN:1"
+      - "pilz_industrial_motion_planner:PTP:1"
+      - "ompl::4"
+    transfer_score_detour_ratio_weight: 3.0
+    transfer_score_joint_path_length_weight: 0.4
+    transfer_score_duration_weight: 0.2
+    transfer_score_z_overshoot_weight: 2.0
+    transfer_score_max_detour_ratio: 3.0
+    transfer_score_max_z_overshoot: 0.35
+    transfer_score_max_duration: 0.0
     cartesian_avoid_collisions: true
     pick_retry_step: 0.004
     pick_retry_count: 0
     dry_run: false
     reset_objects_on_startup: true
+    capture_decision_frames: true
+    return_to_scan_after_success: false
+    return_to_scan_after_candidate_failure: false
+    recover_to_scan_after_skipped_success_timeout: false
+    decision_capture_topic: /debug/capture_decision_frame
     object_ids: [hammer, racket, dumbbell, key]
     objects:
       hammer:

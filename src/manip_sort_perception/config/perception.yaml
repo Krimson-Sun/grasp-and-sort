@@ -42,3 +42,9 @@ perception_grasp_node:
       log_frame_summary: true
       log_candidates: true
       log_candidate_limit: 3
+      decision_capture:
+        request_topic: /debug/capture_decision_frame
+        output_dir: report_assets/decision_frames
+        max_saved_frames: 3
+        unique_objects_only: true
+        max_frame_age_sec: 1.0

@@ -52,6 +52,14 @@ bool plan_and_execute_pose_target(
   bool allow_approximate_ik = true,
   bool allow_position_fallback = false);
 
+bool plan_and_execute_best_pose_target(
+  const rclcpp::Logger& logger,
+  moveit::planning_interface::MoveGroupInterface& move_group,
+  const geometry_msgs::msg::Pose& target_pose,
+  const std::string& label,
+  const std::vector<PlannerCandidate>& planner_candidates,
+  const TransferScoreWeights& score_weights);
+
 bool execute_cartesian_segment(
   const rclcpp::Logger& logger,
   moveit::planning_interface::MoveGroupInterface& move_group,

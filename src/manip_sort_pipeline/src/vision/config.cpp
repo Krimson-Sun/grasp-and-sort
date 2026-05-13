@@ -1,7 +1,9 @@
 #include "manip_sort_pipeline/vision/config.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <future>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -41,6 +43,113 @@ geometry_msgs::msg::Pose pose_from_list(const std::vector<double>& values)
     pose.orientation.w = 1.0;
   }
   return pose;
+}
+
+std::vector<std::string> serialize_planner_candidates(
+  const std::vector<sort_demo::PlannerCandidate>& candidates)
+{
+  std::vector<std::string> specs;
+  specs.reserve(candidates.size());
+  for (const auto& candidate : candidates)
+  {
+    specs.push_back(
+      candidate.pipeline_id + ":" + candidate.planner_id + ":" +
+      std::to_string(candidate.attempts));
+  }
+  return specs;
+}
+
+bool parse_planner_candidate(
+  const std::string& spec,
+  sort_demo::PlannerCandidate& candidate)
+{
+  std::vector<std::string> fields;
+  std::stringstream stream(spec);
+  std::string field;
+  while (std::getline(stream, field, ':'))
+  {
+    fields.push_back(field);
+  }
+
+  if (fields.empty() || fields[0].empty())
+  {
+    return false;
+  }
+
+  candidate.pipeline_id = fields[0];
+  candidate.planner_id = fields.size() > 1 ? fields[1] : "";
+  candidate.attempts = 1;
+  if (fields.size() > 2 && !fields[2].empty())
+  {
+    try
+    {
+      candidate.attempts = std::max(1, std::stoi(fields[2]));
+    }
+    catch (const std::exception&)
+    {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+std::vector<sort_demo::PlannerCandidate> load_planner_candidates(
+  rclcpp::Node& node,
+  const std::string& parameter_name,
+  const std::vector<sort_demo::PlannerCandidate>& defaults)
+{
+  const auto planner_specs = node.declare_parameter<std::vector<std::string>>(
+    parameter_name, serialize_planner_candidates(defaults));
+  std::vector<sort_demo::PlannerCandidate> result;
+  for (const auto& spec : planner_specs)
+  {
+    sort_demo::PlannerCandidate candidate;
+    if (parse_planner_candidate(spec, candidate))
+    {
+      result.push_back(candidate);
+      continue;
+    }
+
+    RCLCPP_WARN(
+      node.get_logger(),
+      "Ignoring invalid %s spec '%s'. Expected 'pipeline:planner:attempts'.",
+      parameter_name.c_str(), spec.c_str());
+  }
+
+  if (result.empty())
+  {
+    RCLCPP_WARN(
+      node.get_logger(),
+      "No valid %s specs were provided. Falling back to ompl with one attempt.",
+      parameter_name.c_str());
+    result.push_back({"ompl", "", 1});
+  }
+
+  return result;
+}
+
+sort_demo::TransferScoreWeights load_score_weights(
+  rclcpp::Node& node,
+  const std::string& prefix,
+  const sort_demo::TransferScoreWeights& defaults)
+{
+  sort_demo::TransferScoreWeights result;
+  result.detour_ratio =
+    node.declare_parameter<double>(prefix + "_detour_ratio_weight", defaults.detour_ratio);
+  result.joint_path_length =
+    node.declare_parameter<double>(prefix + "_joint_path_length_weight", defaults.joint_path_length);
+  result.duration =
+    node.declare_parameter<double>(prefix + "_duration_weight", defaults.duration);
+  result.z_overshoot =
+    node.declare_parameter<double>(prefix + "_z_overshoot_weight", defaults.z_overshoot);
+  result.max_detour_ratio =
+    node.declare_parameter<double>(prefix + "_max_detour_ratio", defaults.max_detour_ratio);
+  result.max_z_overshoot =
+    node.declare_parameter<double>(prefix + "_max_z_overshoot", defaults.max_z_overshoot);
+  result.max_duration =
+    node.declare_parameter<double>(prefix + "_max_duration", defaults.max_duration);
+  return result;
 }
 
 moveit_msgs::msg::CollisionObject make_box(
@@ -83,9 +192,28 @@ VisionManagerConfig load_vision_manager_config(rclcpp::Node& node)
   config.place_z_offset = node.declare_parameter<double>("place_z_offset", config.place_z_offset);
   config.retreat_z_offset =
     node.declare_parameter<double>("retreat_z_offset", config.retreat_z_offset);
+  config.pregrasp_planners =
+    load_planner_candidates(node, "pregrasp_planners", config.pregrasp_planners);
+  config.pregrasp_score_weights =
+    load_score_weights(node, "pregrasp_score", config.pregrasp_score_weights);
+  config.transfer_planners =
+    load_planner_candidates(node, "transfer_planners", config.transfer_planners);
+  config.transfer_score_weights =
+    load_score_weights(node, "transfer_score", config.transfer_score_weights);
   config.dry_run = node.declare_parameter<bool>("dry_run", config.dry_run);
   config.reset_objects_on_startup =
     node.declare_parameter<bool>("reset_objects_on_startup", config.reset_objects_on_startup);
+  config.capture_decision_frames =
+    node.declare_parameter<bool>("capture_decision_frames", config.capture_decision_frames);
+  config.return_to_scan_after_success = node.declare_parameter<bool>(
+    "return_to_scan_after_success", config.return_to_scan_after_success);
+  config.return_to_scan_after_candidate_failure = node.declare_parameter<bool>(
+    "return_to_scan_after_candidate_failure", config.return_to_scan_after_candidate_failure);
+  config.recover_to_scan_after_skipped_success_timeout = node.declare_parameter<bool>(
+    "recover_to_scan_after_skipped_success_timeout",
+    config.recover_to_scan_after_skipped_success_timeout);
+  config.decision_capture_topic = node.declare_parameter<std::string>(
+    "decision_capture_topic", config.decision_capture_topic);
 
   const auto object_ids =
     node.declare_parameter<std::vector<std::string>>("object_ids", std::vector<std::string>{});

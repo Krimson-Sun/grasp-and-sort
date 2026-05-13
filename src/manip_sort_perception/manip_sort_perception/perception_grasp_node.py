@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
+from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
 import cv2
@@ -13,9 +15,16 @@ from manip_sort_interfaces.msg import DetectedObject, DetectedObjectArray, Grasp
 from rclpy.duration import Duration
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import String
 from tf2_ros import Buffer, TransformException, TransformListener
 
-from .debug_vis import draw_candidates, draw_components, draw_roi
+from .debug_vis import (
+    DecisionOverlayObject,
+    draw_candidates,
+    draw_components,
+    draw_decision_overlay,
+    draw_roi,
+)
 from .geometry import (
     build_pose_from_world_point,
     compute_pca_angle,
@@ -39,6 +48,16 @@ def _parse_hsv_ranges(raw_ranges: Sequence[object]) -> List[Tuple[np.ndarray, np
         upper = np.array(values[3:6], dtype=np.uint8)
         parsed.append((lower, upper))
     return parsed
+
+
+@dataclass
+class _DecisionFrameSnapshot:
+    image: np.ndarray
+    roi: Tuple[int, int, int, int]
+    objects: List[DecisionOverlayObject]
+    frame_index: int
+    frame_stamp_sec: int
+    frame_stamp_nanosec: int
 
 
 class PerceptionGraspNode(Node):
@@ -73,6 +92,11 @@ class PerceptionGraspNode(Node):
         self.declare_parameter("debug.log_frame_summary", True)
         self.declare_parameter("debug.log_candidates", True)
         self.declare_parameter("debug.log_candidate_limit", 3)
+        self.declare_parameter("debug.decision_capture.request_topic", "/debug/capture_decision_frame")
+        self.declare_parameter("debug.decision_capture.output_dir", "report_assets/decision_frames")
+        self.declare_parameter("debug.decision_capture.max_saved_frames", 3)
+        self.declare_parameter("debug.decision_capture.unique_objects_only", True)
+        self.declare_parameter("debug.decision_capture.max_frame_age_sec", 1.0)
         self.declare_parameter("color_order", ["red", "green", "blue", "yellow"])
         self.declare_parameter("color_to_class.red", "hammer")
         self.declare_parameter("color_to_class.green", "racket")
@@ -109,6 +133,21 @@ class PerceptionGraspNode(Node):
         self._log_frame_summary = bool(self.get_parameter("debug.log_frame_summary").value)
         self._log_candidates = bool(self.get_parameter("debug.log_candidates").value)
         self._log_candidate_limit = int(self.get_parameter("debug.log_candidate_limit").value)
+        self._decision_capture_topic = str(
+            self.get_parameter("debug.decision_capture.request_topic").value
+        )
+        self._decision_capture_output_dir = Path(
+            str(self.get_parameter("debug.decision_capture.output_dir").value)
+        )
+        self._decision_capture_max_saved_frames = int(
+            self.get_parameter("debug.decision_capture.max_saved_frames").value
+        )
+        self._decision_capture_unique_objects_only = bool(
+            self.get_parameter("debug.decision_capture.unique_objects_only").value
+        )
+        self._decision_capture_max_frame_age_sec = float(
+            self.get_parameter("debug.decision_capture.max_frame_age_sec").value
+        )
 
         color_order = [str(value) for value in self.get_parameter("color_order").value]
         self._color_to_class = {
@@ -128,6 +167,12 @@ class PerceptionGraspNode(Node):
         self._best_grasp_pub = self.create_publisher(DetectedObject, "/best_grasp", 10)
         self._overlay_pub = self.create_publisher(Image, "/debug/grasp_overlay", 10)
         self._components_pub = self.create_publisher(Image, "/debug/object_overlay", 10)
+        self._decision_capture_sub = self.create_subscription(
+            String,
+            self._decision_capture_topic,
+            self._on_decision_capture_request,
+            10,
+        )
 
         color_topic = self.get_parameter("camera.color_topic").value
         depth_topic = self.get_parameter("camera.depth_topic").value
@@ -144,10 +189,20 @@ class PerceptionGraspNode(Node):
         self._frame_index = 0
         self._last_frame_wall_time = self.get_clock().now()
         self._camera_wait_timer = self.create_timer(5.0, self._log_camera_wait_state)
+        self._latest_decision_snapshot: _DecisionFrameSnapshot | None = None
+        self._saved_decision_object_ids: set[str] = set()
+        self._saved_decision_frame_keys: set[tuple[str, int]] = set()
+        self._saved_decision_count = 0
         self._log_info(
             "perception_grasp_node subscribed to "
             f"color='{color_topic}', depth='{depth_topic}', camera_info='{info_topic}', "
             f"camera_frame='{self._camera_frame}', world_frame='{self._world_frame}'"
+        )
+        self._log_info(
+            "decision capture configured with "
+            f"topic='{self._decision_capture_topic}', output_dir='{self._decision_capture_output_dir}', "
+            f"max_saved_frames={self._decision_capture_max_saved_frames}, "
+            f"unique_objects_only={self._decision_capture_unique_objects_only}"
         )
 
     def _log_info(self, message: str) -> None:
@@ -202,6 +257,112 @@ class PerceptionGraspNode(Node):
                 f"camera_frame_gap: last synchronized frame arrived {seconds_since_last_frame:.1f}s ago"
             )
 
+    def _build_overlay_object(self, component, candidates: Sequence[object]) -> DecisionOverlayObject:
+        contour = component.contour.copy()
+        contour[:, 0, 0] += self._table_roi[0]
+        contour[:, 0, 1] += self._table_roi[1]
+        x, y, w, h = component.bbox
+        global_candidates = [
+            type(
+                "OverlayCandidate",
+                (),
+                {
+                    "u": self._restore_point(candidate.u, candidate.v)[0],
+                    "v": self._restore_point(candidate.u, candidate.v)[1],
+                    "yaw": candidate.yaw,
+                },
+            )()
+            for candidate in candidates
+        ]
+        return DecisionOverlayObject(
+            object_id=self._color_to_class[component.color_name],
+            label=self._color_to_class[component.color_name],
+            contour=contour,
+            bbox=(x + self._table_roi[0], y + self._table_roi[1], w, h),
+            centroid_px=self._restore_point(*component.centroid_px),
+            candidates=global_candidates,
+            best_score=float(candidates[0].score) if candidates else 0.0,
+        )
+
+    def _store_decision_snapshot(
+        self,
+        color_image: np.ndarray,
+        color_msg: Image,
+        overlay_objects: Sequence[DecisionOverlayObject],
+    ) -> None:
+        self._latest_decision_snapshot = _DecisionFrameSnapshot(
+            image=color_image.copy(),
+            roi=self._table_roi,
+            objects=list(overlay_objects),
+            frame_index=self._frame_index,
+            frame_stamp_sec=int(color_msg.header.stamp.sec),
+            frame_stamp_nanosec=int(color_msg.header.stamp.nanosec),
+        )
+
+    def _on_decision_capture_request(self, message: String) -> None:
+        object_id = message.data.strip()
+        if not object_id:
+            self.get_logger().warn("decision_capture_request_ignored: empty object id")
+            return
+        if self._saved_decision_count >= self._decision_capture_max_saved_frames:
+            return
+        if self._decision_capture_unique_objects_only and object_id in self._saved_decision_object_ids:
+            return
+
+        snapshot = self._latest_decision_snapshot
+        if snapshot is None:
+            self.get_logger().warn(
+                f"decision_capture_request_ignored: no processed perception frame is available for '{object_id}'"
+            )
+            return
+
+        frame_age_sec = (
+            self.get_clock().now() - self._last_frame_wall_time
+        ).nanoseconds / 1e9
+        if frame_age_sec > self._decision_capture_max_frame_age_sec:
+            self.get_logger().warn(
+                f"decision_capture_request_ignored: latest frame is too old ({frame_age_sec:.2f}s) for '{object_id}'"
+            )
+            return
+
+        selected_object = next((item for item in snapshot.objects if item.object_id == object_id), None)
+        if selected_object is None:
+            self.get_logger().warn(
+                f"decision_capture_request_ignored: object '{object_id}' is not present in the latest snapshot"
+            )
+            return
+
+        frame_key = (object_id, snapshot.frame_index)
+        if frame_key in self._saved_decision_frame_keys:
+            return
+
+        overlay = draw_decision_overlay(
+            snapshot.image,
+            snapshot.roi,
+            snapshot.objects,
+            selected_object_id=object_id,
+            frame_label=f"Decision frame #{self._saved_decision_count + 1}",
+        )
+        self._decision_capture_output_dir.mkdir(parents=True, exist_ok=True)
+        file_name = (
+            f"decision_{self._saved_decision_count + 1:02d}_"
+            f"frame_{snapshot.frame_index:05d}_{object_id}_"
+            f"{snapshot.frame_stamp_sec}_{snapshot.frame_stamp_nanosec}.png"
+        )
+        output_path = self._decision_capture_output_dir / file_name
+        if not cv2.imwrite(str(output_path), overlay):
+            self.get_logger().error(
+                f"decision_capture_write_failed: could not save '{output_path}'"
+            )
+            return
+
+        self._saved_decision_count += 1
+        self._saved_decision_object_ids.add(object_id)
+        self._saved_decision_frame_keys.add(frame_key)
+        self._log_info(
+            f"decision_capture_saved: object='{object_id}' frame={snapshot.frame_index} file='{output_path}'"
+        )
+
     def _on_images(self, color_msg: Image, depth_msg: Image, camera_info_msg: CameraInfo) -> None:
         self._frame_index += 1
         self._last_frame_wall_time = self.get_clock().now()
@@ -237,6 +398,7 @@ class PerceptionGraspNode(Node):
         result = DetectedObjectArray()
         result.header = color_msg.header
         all_candidates_for_overlay = []
+        decision_overlay_objects = []
         best_object = None
         best_candidate_overlay = None
 
@@ -311,6 +473,7 @@ class PerceptionGraspNode(Node):
                 )
 
             best_candidate = candidates[0]
+            decision_overlay_objects.append(self._build_overlay_object(component, candidates))
             for candidate in candidates:
                 global_u, global_v = self._restore_point(candidate.u, candidate.v)
                 depth_m = float(depth_roi[candidate.v, candidate.u])
@@ -376,6 +539,8 @@ class PerceptionGraspNode(Node):
         self._objects_pub.publish(result)
         if best_object is not None:
             self._best_grasp_pub.publish(best_object)
+
+        self._store_decision_snapshot(color_image, color_msg, decision_overlay_objects)
 
         if self._publish_component_overlay:
             component_overlay = draw_components(draw_roi(color_image, self._table_roi), components)

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import math
-from typing import Optional, Sequence, Tuple
+from typing import Any, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
-from geometry_msgs.msg import PointStamped, Pose
-from tf2_geometry_msgs import do_transform_point
 
 
 def compute_pca_angle(mask: np.ndarray) -> float:
@@ -156,7 +154,9 @@ def build_pose_from_world_point(
     yaw: float,
     z_override: Optional[float] = None,
     transform=None,
-) -> Pose:
+) -> Any:
+    from geometry_msgs.msg import Pose
+
     pose = Pose()
     pose.position.x = float(world_xyz[0])
     pose.position.y = float(world_xyz[1])
@@ -177,6 +177,9 @@ def transform_camera_point_to_world(
     transform,
     camera_frame: str,
 ) -> np.ndarray:
+    from geometry_msgs.msg import PointStamped
+    from tf2_geometry_msgs import do_transform_point
+
     stamped = PointStamped()
     stamped.header.frame_id = camera_frame
     stamped.point.x = float(point_cam[0])
